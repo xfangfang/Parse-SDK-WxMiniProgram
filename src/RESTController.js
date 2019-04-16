@@ -30,59 +30,8 @@ export type FullOptions = {
   progress?: any;
 };
 
-let XHR = null;
-if (typeof XMLHttpRequest !== 'undefined') {
-  XHR = XMLHttpRequest;
-}
-if (process.env.PARSE_BUILD === 'node') {
-  XHR = require('xmlhttprequest').XMLHttpRequest;
-}
-
-let useXDomainRequest = false;
-if (typeof XDomainRequest !== 'undefined' &&
-    !('withCredentials' in new XMLHttpRequest())) {
-  useXDomainRequest = true;
-}
-
-function ajaxIE9(method: string, url: string, data: any, options?: FullOptions) {
-  return new Promise((resolve, reject) => {
-    const xdr = new XDomainRequest();
-    xdr.onload = function() {
-      let response;
-      try {
-        response = JSON.parse(xdr.responseText);
-      } catch (e) {
-        reject(e);
-      }
-      if (response) {
-        resolve({ response });
-      }
-    };
-    xdr.onerror = xdr.ontimeout = function() {
-      // Let's fake a real error message.
-      const fakeResponse = {
-        responseText: JSON.stringify({
-          code: ParseError.X_DOMAIN_REQUEST,
-          error: 'IE\'s XDomainRequest does not supply error info.'
-        })
-      };
-      reject(fakeResponse);
-    };
-    xdr.onprogress = function() {
-      if(options && typeof options.progress === 'function') {
-        options.progress(xdr.responseText);
-      }
-    };
-    xdr.open(method, url);
-    xdr.send(data);
-  });
-}
-
 const RESTController = {
   ajax(method: string, url: string, data: any, headers?: any, options?: FullOptions) {
-    if (useXDomainRequest) {
-      return ajaxIE9(method, url, data, headers, options);
-    }
 
     let res, rej;
     const promise = new Promise((resolve, reject) => { res = resolve; rej = reject; });
@@ -91,91 +40,59 @@ const RESTController = {
     let attempts = 0;
 
     const dispatch = function() {
-      if (XHR == null) {
-        throw new Error(
-          'Cannot make a request: No definition of XMLHttpRequest was found.'
-        );
-      }
-      let handled = false;
-      const xhr = new XHR();
-      xhr.onreadystatechange = function() {
-        if (xhr.readyState !== 4 || handled) {
-          return;
-        }
-        handled = true;
-
-        if (xhr.status >= 200 && xhr.status < 300) {
-          let response;
-          try {
-            response = JSON.parse(xhr.responseText);
-
-            if (typeof xhr.getResponseHeader === 'function') {
-              if ((xhr.getAllResponseHeaders() || '').includes('x-parse-job-status-id: ')) {
-                response = xhr.getResponseHeader('x-parse-job-status-id');
-              }
-            }
-          } catch (e) {
-            promise.reject(e.toString());
-          }
-          if (response) {
-            promise.resolve({ response, status: xhr.status, xhr });
-          }
-        } else if (xhr.status >= 500 || xhr.status === 0) { // retry on 5XX or node-xmlhttprequest error
-          if (++attempts < CoreManager.get('REQUEST_ATTEMPT_LIMIT')) {
-            // Exponentially-growing random delay
-            const delay = Math.round(
-              Math.random() * 125 * Math.pow(2, attempts)
-            );
-            setTimeout(dispatch, delay);
-          } else if (xhr.status === 0) {
-            promise.reject('Unable to connect to the Parse API');
-          } else {
-            // After the retry limit is reached, fail
-            promise.reject(xhr);
-          }
-        } else {
-          promise.reject(xhr);
-        }
-      };
 
       headers = headers || {};
       if (typeof(headers['Content-Type']) !== 'string') {
         headers['Content-Type'] = 'text/plain'; // Avoid pre-flight
       }
-      if (CoreManager.get('IS_NODE')) {
-        headers['User-Agent'] = 'Parse/' + CoreManager.get('VERSION') +
-          ' (NodeJS ' + process.versions.node + ')';
-      }
       if (CoreManager.get('SERVER_AUTH_TYPE') && CoreManager.get('SERVER_AUTH_TOKEN')) {
         headers['Authorization'] = CoreManager.get('SERVER_AUTH_TYPE') + ' ' + CoreManager.get('SERVER_AUTH_TOKEN');
       }
+      wx.request({
+              url, data, method, headers,
+              success: (res) => {
+                // 请求成功并返回了json对象
+                if(res.statusCode == 200 && typeof(res.data) === 'object'){
+                    var response = res.data
+                    promise.resolve({response,status:res.statusCode,res});
+                }else if(res.statusCode >= 500 || res.statusCode === 0){
+                    //重试
+                    if (++attempts < CoreManager.get('REQUEST_ATTEMPT_LIMIT')) {
+                      // Exponentially-growing random delay
+                      const delay = Math.round(
+                        Math.random() * 125 * Math.pow(2, attempts)
+                      );
+                      setTimeout(dispatch, delay);
+                    }else if (res.statusCode === 0) {
+                        promise.reject('Unable to connect to the Parse API');
+                    }else{
+                        try{
+                            promise.reject(JSON.stringify(res));
+                        }catch (e) {
+                          promise.reject(res);
+                        }
+                    }
+                }else{
+                    try{
+                        promise.reject(JSON.stringify(res));
+                    }catch (e) {
+                      promise.reject(res);
+                    }
+                }
+              },
+              fail: (res) => {
+                // 请求失败
+                try{
+                    promise.reject(JSON.stringify(res));
+                }catch (e) {
+                  promise.reject(res);
+                }
 
-      if(options && typeof options.progress === 'function') {
-        if (xhr.upload) {
-          xhr.upload.addEventListener('progress', (oEvent) => {
-            if (oEvent.lengthComputable) {
-              options.progress(oEvent.loaded / oEvent.total);
-            } else {
-              options.progress(null);
-            }
-          });
-        } else if (xhr.addEventListener) {
-          xhr.addEventListener('progress', (oEvent) => {
-            if (oEvent.lengthComputable) {
-              options.progress(oEvent.loaded / oEvent.total);
-            } else {
-              options.progress(null);
-            }
-          });
-        }
-      }
-
-      xhr.open(method, url, true);
-
-      for (const h in headers) {
-        xhr.setRequestHeader(h, headers[h]);
-      }
-      xhr.send(data);
+              },
+              complete: (res) => {
+                // 请求完成
+              }
+            });
     }
     dispatch();
 
@@ -284,10 +201,6 @@ const RESTController = {
       return Promise.reject(error);
     });
   },
-
-  _setXHR(xhr: any) {
-    XHR = xhr;
-  }
 }
 
 module.exports = RESTController;
