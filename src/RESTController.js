@@ -52,9 +52,13 @@ const RESTController = {
               url, data, method, headers,
               success: (res) => {
                 // 请求成功并返回了json对象
-                if(res.statusCode == 200 && typeof(res.data) === 'object'){
-                    var response = res.data
-                    promise.resolve({response,status:res.statusCode,res});
+                if(res.statusCode >= 200 && res.statusCode < 300){
+                    if( typeof(res.data) === 'object'){
+                        var response = res.data
+                        promise.resolve({response,status:res.statusCode,res});
+                    }else{
+                        promise.reject(res);
+                    }
                 }else if(res.statusCode >= 500 || res.statusCode === 0){
                     //重试
                     if (++attempts < CoreManager.get('REQUEST_ATTEMPT_LIMIT')) {
@@ -66,18 +70,10 @@ const RESTController = {
                     }else if (res.statusCode === 0) {
                         promise.reject('Unable to connect to the Parse API');
                     }else{
-                        try{
-                            promise.reject(JSON.stringify(res));
-                        }catch (e) {
-                          promise.reject(res);
-                        }
+                        promise.reject(res);
                     }
                 }else{
-                    try{
-                        promise.reject(JSON.stringify(res));
-                    }catch (e) {
-                      promise.reject(res);
-                    }
+                    promise.reject(res);
                 }
               },
               fail: (res) => {
@@ -87,7 +83,6 @@ const RESTController = {
                 }catch (e) {
                   promise.reject(res);
                 }
-
               },
               complete: (res) => {
                 // 请求完成
